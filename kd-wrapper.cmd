@@ -1,0 +1,1 @@
+kd.exe -remote tcp:Port=%1,Server=%2
