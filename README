@@ -1,20 +1,35 @@
-The problem:
+# Emacs grand unified debugger interface to Windows kernel debugger (kd.exe) 
+
+## The problem
 
 Unfortunately gud mangles input string of type tcp:Port=<port>,Server=<host>; 
 So the only way to connect to remote kd session (so far found) is to use simple cmd wrapper to pass over these arguments to KD.
 
-How to use:
+## Setting up
+
+```lisp
 (add-to-list 'load-path "/path/to/cdb-kd")
 (load cdb-gud)
+```
 
 Use should also have kd.exe in your path:
 
+```lisp
 (setenv "PATH"
         (concat 
         "C:\\path\\to\windbg"
          (getenv "PATH")))
 
 (add-to-list 'exec-path "C:\\path\\to\windbg")
+```
+
+## Usage
+M-x kd-remote
+
+It will ask for <port> and <host>,
+for example,
+
+Enter remote session <port> <hostname>: 64429 DEVELOP-MACHINE
 
 
         
