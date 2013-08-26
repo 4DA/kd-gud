@@ -1,2 +1,21 @@
+The problem:
 
+Unfortunately gud mangles input string of type tcp:Port=<port>,Server=<host>; 
+So the only way to connect to remote kd session (so far found) is to use simple cmd wrapper to pass over these arguments to KD.
+
+How to use:
+(add-to-list 'load-path "/path/to/cdb-kd")
+(load cdb-gud)
+
+Use should also have kd.exe in your path:
+
+(setenv "PATH"
+        (concat 
+        "C:\\path\\to\windbg"
+         (getenv "PATH")))
+
+(add-to-list 'exec-path "C:\\path\\to\windbg")
+
+
+        
 
