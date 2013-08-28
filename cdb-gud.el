@@ -342,6 +342,25 @@ containing the executable being debugged."
     ;;(sleep-for 5)
     output))
 
+(defun gud-kd-marker-filter (string)
+  (setq gud-marker-acc (concat gud-marker-acc string))
+  (setq stack-lines string)
+
+  (if (string-match 
+       " \\[\\(.*\\) @ \\([0-9]+\\)\\]" ;; file @ line
+       stack-lines)
+
+      (let
+	  ((fname)
+	   (linenum))
+	(setq fname (substring stack-lines (match-beginning 1) (match-end 1)))
+	(setq linenum (string-to-number (substring stack-lines (match-beginning 2) (match-end 2))))
+	(setq fname (gud-cdb-remap-fname fname))
+
+	(if (and fname (file-exists-p fname))
+	  (setq gud-last-frame (cons fname linenum)))))
+  string)
+
 (defun gud-cdb-find-file (f)
   (save-excursion
     (let ((realf (gud-cdb-file-name f)))
@@ -351,6 +370,48 @@ containing the executable being debugged."
 			(find-file-noselect f 'nowarn)
 			)
         ))))
+
+(defun gud-kd-find-file (f)
+  (save-excursion
+    (let ((realf (gud-cdb-file-name f)))
+	  (if (file-exists-p (or realf f))
+		  (if realf
+			  (find-file-noselect realf t)
+			(find-file-noselect f 'nowarn)
+			)
+        ))))
+
+
+(setq kd-prev-cmd "")
+
+
+;; sending .frame command after each cmd to get line source info
+
+(defun kd-simple-send (proc string)
+  (cl-block nil
+
+	; if you hit return, then send previous meaningful command
+	; otherwise kd could execute .frame cmd repeatedly
+
+    (when (string= string "")
+      ;; (comint-send-string proc (concat kd-prev-cmd "\n"))
+      (setq string kd-prev-cmd)
+
+      ;; (cl-return nil)
+      )
+
+    (comint-send-string proc (concat string "\n")) ;; this first: error writing to buf otherwisesd
+    
+    (when  (or (string= string "p") 
+    	       (string= string "t") 
+    	       (string= string "g"))
+
+      (comint-send-string proc (concat ".frame" "\n")))
+    
+    (setq kd-prev-cmd string)
+
+    (if (string-match "^[ \t]*[Qq][ \t]*" string)
+	(kill-buffer gud-comint-buffer))))
 
 (defun cdb-simple-send (proc string)
   (comint-send-string proc (concat string "\n")) ;; this first: error writing to buf otherwisesd
@@ -383,7 +444,7 @@ containing the executable being debugged."
                              (kd-query-cmdline))))
 
   (gud-common-init command-line 'gud-cdb-remote-massage-args
-                   'gud-cdb-marker-filter 'gud-cdb-find-file)
+                   'gud-kd-marker-filter 'gud-kd-find-file)
 
   (set (make-local-variable 'gud-minor-mode) 'cdb)
 
@@ -396,7 +457,8 @@ containing the executable being debugged."
   (gud-def gud-print  "?? %e "        "\C-p" "Evaluate C expression at point.")
 
   (setq comint-prompt-regexp "^[0-9a-f]:[0-9a-f][0-9a-f][0-9a-f]> ")
-  (setq comint-input-sender 'cdb-simple-send)
+  (setq comint-prompt-regexp "^[0-9a-f]: kd>")
+  (setq comint-input-sender 'kd-simple-send)
   (setq paragraph-start comint-prompt-regexp)
 
   (run-hooks 'cdb-mode-hook))
@@ -429,6 +491,12 @@ and source-file directory for your debugger."
 
 ;; cdb speedbar functions
 
+(defun gud-kd-goto-stackframe (text token indent)
+  "Goto the stackframe described by TEXT, TOKEN, and INDENT."
+  (speedbar-with-attached-buffer
+   (gud-display-line (nth 2 token) (string-to-number (nth 3 token)))
+   (gud-basic-call (concat ".frame " (nth 1 token)))))
+
 (defun gud-cdb-goto-stackframe (text token indent)
   "Goto the stackframe described by TEXT, TOKEN, and INDENT."
   (speedbar-with-attached-buffer
@@ -442,6 +510,38 @@ and source-file directory for your debugger."
 
 (defvar gud-cdb-fetched-stack-frame-list nil
   "List of stack frames we are fetching from CDB.")
+
+(defun gud-kd-get-stackframe (buffer)
+  "Extract the current stack frame out of the GUD KD BUFFER."
+
+  (let ((newlst nil)
+        (gud-cdb-fetched-stack-frame-list nil))
+    (gud-kd-run-command-fetch-lines "kn " buffer)
+
+    (if (and (car gud-cdb-fetched-stack-frame-list)
+             (string-match "No stack" (car gud-cdb-fetched-stack-frame-list)))
+        ;; Go into some other mode???
+        nil
+      (while gud-cdb-fetched-stack-frame-list
+        (let ((e (car gud-cdb-fetched-stack-frame-list))
+              (name nil) (num nil))
+
+          (if (not (string-match "^\\([0-9]+\\) [0-9a-f`]+ [0-9a-f`]+ \\([[0-9a-z_A-Z!+`:]*\\).*$" e))
+              nil
+            (setq num (match-string 1 e)
+                  name (match-string 2 e))
+	    
+            (setq newlst
+                  (cons
+                   (if (string-match
+                        "\\([-0-9a-zA-Z\\_.:]+\\) @ \\([0-9]+\\)" e)
+                       (list name num (match-string 1 e)
+                             (match-string 2 e))
+                     (list name num))
+                   newlst))))
+        (setq gud-cdb-fetched-stack-frame-list
+              (cdr gud-cdb-fetched-stack-frame-list)))
+      (nreverse newlst))))
 
 (defun gud-cdb-get-stackframe (buffer)
   "Extract the current stack frame out of the GUD CDB BUFFER."
@@ -471,6 +571,32 @@ and source-file directory for your debugger."
               (cdr gud-cdb-fetched-stack-frame-list)))
       (nreverse newlst))))
 
+(defun gud-kd-run-command-fetch-lines (command buffer)
+  "Run COMMAND, and return when `gud-cdb-fetched-stack-frame-list' is full.
+BUFFER is the GUD buffer in which to run the command."
+  (save-excursion
+    (set-buffer buffer)
+    (if (save-excursion
+          (goto-char (point-max))
+          (forward-line 0)
+          (not (looking-at comint-prompt-regexp)))
+        (progn
+          ;; (format (message "shit failed. comint-prompt-regexp: %s" comint-prompt-regexp))
+          nil)
+
+      ;; Much of this copied from CDB complete, but I'm grabbing the stack
+      ;; frame instead.
+      (let ((gud-marker-filter 'gud-cdb-speedbar-stack-filter))
+        ;; Issue the command to CDB.
+        (gud-basic-call command)
+        (setq gud-cdb-complete-in-progress t)
+        ;; Slurp the output.
+        (while gud-cdb-complete-in-progress
+          (accept-process-output (get-buffer-process gud-comint-buffer) 15))
+        (setq gud-cdb-fetched-stack-frame nil
+              gud-cdb-fetched-stack-frame-list
+              (nreverse gud-cdb-fetched-stack-frame-list))))))
+
 (defun gud-cdb-run-command-fetch-lines (command buffer)
   "Run COMMAND, and return when `gud-cdb-fetched-stack-frame-list' is full.
 BUFFER is the GUD buffer in which to run the command."
@@ -498,7 +624,10 @@ BUFFER is the GUD buffer in which to run the command."
   ;; checkdoc-params: (string)
   "Filter used to read in the current CDB stack."
   (setq string (concat gud-cdb-fetched-stack-frame string))
+  ;; (message (format "in gud-cdb-mf: %s" string))
+
   (while (string-match "\n" string)
+    ;; (message (format "in gud-cdb-mf: %s" string))
     (setq gud-cdb-fetched-stack-frame-list
           (cons (substring string 0 (match-beginning 0))
                 gud-cdb-fetched-stack-frame-list))
@@ -527,6 +656,9 @@ off the specialized speedbar mode."
                   ((eq ff 'gud-cdb-find-file)
                    (gud-cdb-get-stackframe buffer)
                    )
+		  ((eq ff 'gud-kd-find-file)
+                   (gud-kd-get-stackframe buffer)
+                   )
                   ;; *SD* --
                   ;; Add more debuggers here!
                   (t
@@ -550,6 +682,8 @@ off the specialized speedbar mode."
                                          'gud-gdb-goto-stackframe)
                                         ((eq ff 'gud-cdb-find-file)
                                          'gud-cdb-goto-stackframe)
+					((eq ff 'gud-kd-find-file)
+					 'gud-kd-goto-stackframe)
                                         (t (error "Should never be here")))
                                   (car frames) t))
         (setq frames (cdr frames)))
