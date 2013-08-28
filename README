@@ -29,8 +29,5 @@ It will ask for <port> and <host>,
 for example you could enter 64429 DEVELOP-MACHINE
 
 It is also possible to view current stack.
-Just call M-x speedbar and when in gud prompt it will show current function call stack.
-
-
-        
+Just call M-x speedbar and when in gud prompt it will show current function call hierarchy.
 
